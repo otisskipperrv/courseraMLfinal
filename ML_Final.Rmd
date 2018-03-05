@@ -1,0 +1,123 @@
+---
+title: "Machine Learning Final"
+author: "Otis"
+date: "3/3/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+```
+
+# Import Packages And Clean Data
+```{r packages, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(caret)
+
+```
+
+```{r import_data}
+setwd('/Users/oskipper/Documents/Data Science/DSAccelerator/ThirdPhase/Coursera/MachineLearningFinal/')
+training <- read.csv('pml-training.csv')
+testing <- read.csv('pml-testing.csv')
+
+```
+
+## Get rid of 'bad' variables
+Some variables are mostly NA, we can just ignore these since they won't provide comprehensive value in predicting  
+We also have some variables that should not be used to predict (timestamps, indexes, user_name etc...) so remove those as well
+
+```{r cleanup_vars}
+raw_train <- training
+#Replace blank values with NA
+raw_train[raw_train==""] <- NA
+
+all_cols <- colnames(raw_train)
+cols_na_count <- raw_train %>% 
+  summarise_all(funs(sum(is.na(.))))
+
+# Create a vector of only columns we want
+# From data we see either columns have 938 NAs or 0, so we can use ==0 
+# If data was different then ==0 may not be a good assumption
+cols_no_na <- all_cols[cols_na_count == 0]
+
+# Get columns with no NA values - also manually drop some columns
+raw_train_2 <- raw_train %>% 
+  select(cols_no_na) %>% 
+  # Get rid of index column
+  select(-X, -raw_timestamp_part_1, -user_name, -raw_timestamp_part_2, -cvtd_timestamp, -new_window, -num_window)
+
+```
+
+
+## Create Validation Set
+We want to subset our training set into a training and validation set. We just train on the training subset and can then use the validation set to predict accuracy of the model on the testing set. 
+
+```{r create_validation}
+trainIndex <- createDataPartition(training$classe, p = .8, list = FALSE)
+validation_holdout <- raw_train_2[-trainIndex,]
+training_subset <- raw_train_2[trainIndex,]
+train_1 <- training_subset
+
+```
+
+
+# Determine Best Variables To Use
+There were initially 160 variables, this is potentially too large to train our final models on (too much noise and loss of interprebility, also models would take a very long time). We will train a random forest on a subset of this and the run the VarImp() command to see what variables are most important in that model, we can then choose to take the top N of those variables and then train our final model on just those.
+Here are the variables we use:
+```{r var_importance}
+var_importance_train <- train_1[sample(nrow(train_1), 1000), ]
+var_importance_model <- train(classe ~ .,method = "rf", data=var_importance_train) # build model
+
+total_num_vars <- 15
+important_vars <- data.frame(varImp(var_importance_model)[1][1])
+important_vars <- rownames_to_column(important_vars, 'var_name')
+
+important_vars <- important_vars %>% 
+  arrange(desc(Overall)) %>% 
+  head(total_num_vars)
+
+```
+
+# Train Model
+The initial plan here was to train multiple models using cross validation and then ensemble together the results to get a more accurate prediction. Training a cross validated random forest actually proved to be very accurate and combinig with other methods did not increase accuracy so I chose to stick with a simple random forest. R allows for integration with cross validation using the trainControl with method set to "cv". I chose the cross validation value of 10, this was somewhat arbitrary but seemed to be a consistent and acceptable choice among multiple resources and proved to be quite accurate. 
+
+```{r train_model}
+
+train_control <- trainControl(method = "cv", number = 10, savePredictions = TRUE)
+rf_mod <- train(classe ~ ., method = "rf", data = train_1, trControl = train_control)
+```
+
+
+# Predict on the Validation Set And Predict Accuracy
+
+Using the Random Forest Model to predict on our validation holdout we see the following results.
+```{r predict_valid_set}
+rf_preds <- predict(rf_mod, validation_holdout)
+conf_mat <- confusionMatrix(rf_preds, validation_holdout$classe)
+conf_mat$table
+```
+We can look at the accuracy to see how well our model fit the validation data
+```{r}
+conf_mat$overall[1]
+```
+
+
+We can also look at our accuracy on our training set to see how that compares
+```{r predict_train}
+rf_preds_2 <- predict(rf_mod, train_1)
+conf_mat_2 <- confusionMatrix(rf_preds_2, train_1$classe)
+conf_mat_2$overall[1]
+
+```
+
+
+
+# Predict on the Testing Set
+We now have a random forest model that we can expect to run within some level of accuracy. We can now use that model to predict on our testing set
+```{r predict_test}
+test_preds <- predict(rf_mod, testing)
+test_preds
+```
+
